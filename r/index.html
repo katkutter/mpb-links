@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Your receipt</title>
+<!--
+  My Piercing Buddy — the receipt page (SERVICE_RECORD_SPEC v0.1).
+  The whole receipt rides in the URL fragment (#…), which the browser never sends to this server.
+  This page reads it, decodes it (base64url → raw DEFLATE → JSON, or raw JSON), and draws it.
+  No network calls, nothing stored, nothing collected. The host sees that a page was opened — never what.
+-->
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 17px/1.4 -apple-system, system-ui, sans-serif; margin: 0; padding: 24px 16px 48px; color: #1c1c1e; background: #f2f2f7; }
+  @media (prefers-color-scheme: dark) { body { color: #f2f2f7; background: #000; } .card { background: #1c1c1e !important; } .muted { color: #98989d !important; } }
+  .card { background: #fff; border-radius: 16px; padding: 20px 20px 16px; max-width: 480px; margin: 0 auto 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  h1 { font-size: 22px; margin: 0 0 2px; }
+  .muted { color: #6e6e73; font-size: 14px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 14px; font-variant-numeric: tabular-nums; }
+  td { padding: 6px 0; vertical-align: top; }
+  td.amt { text-align: right; white-space: nowrap; padding-left: 12px; }
+  tr.discount td { color: #2e8b57; }
+  tr.rule td { border-top: 1px solid rgba(128,128,128,.3); padding-top: 10px; }
+  tr.total td { font-weight: 700; font-size: 19px; }
+  .qty { color: #6e6e73; }
+  .foot { text-align: center; }
+  .btn { display: inline-block; margin: 14px 6px 0; padding: 10px 18px; border-radius: 12px; background: #0a84ff; color: #fff; text-decoration: none; font-weight: 600; }
+  .err { color: #c0392b; }
+</style>
+</head>
+<body>
+<div id="app"><div class="card"><p class="muted">Opening your receipt…</p></div></div>
+
+<script>
+(async function () {
+  const app = document.getElementById('app');
+  const money = (c, cur) => {
+    const sign = c < 0 ? '−' : '';
+    const v = Math.abs(c);
+    return sign + (cur === 'USD' || !cur ? '$' : cur + ' ') + (v / 100).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  };
+  const esc = s => String(s).replace(/[&<>"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));
+  const tenderName = k => ({ cash: 'Cash', card: 'Card', gift: 'Gift card', check: 'Check', other: 'Other' })[k] || k;
+
+  function b64urlToBytes(s) {
+    s = s.replace(/-/g, '+').replace(/_/g, '/');
+    while (s.length % 4) s += '=';
+    const bin = atob(s);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+
+  async function inflateRaw(bytes) {
+    if (typeof DecompressionStream === 'undefined') throw new Error('This browser cannot open compressed receipts. Try Safari or Chrome.');
+    const ds = new DecompressionStream('deflate-raw');
+    const stream = new Blob([bytes]).stream().pipeThrough(ds);
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+
+  async function decode(fragment) {
+    const bytes = b64urlToBytes(fragment);
+    const first = bytes[0];
+    const json = (first === 0x7b || first === 0x5b) ? bytes : await inflateRaw(bytes);   // "{" or "[" = raw JSON
+    const parsed = JSON.parse(new TextDecoder().decode(json));
+    return Array.isArray(parsed) ? parsed : [parsed];
+  }
+
+  function receiptCard(r) {
+    const cur = r.cur || 'USD';
+    const when = r.at ? new Date(r.at * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '';
+    let rows = '';
+    for (const ln of (r.ln || [])) {
+      const qty = ln.q > 1 && !ln.d ? ` <span class="qty">× ${ln.q}</span>` : '';
+      rows += `<tr class="${ln.d ? 'discount' : ''}"><td>${esc(ln.n)}${qty}</td><td class="amt">${money(ln.c, cur)}</td></tr>`;
+    }
+    if (r.more > 0) rows += `<tr><td class="muted" colspan="2">+${r.more} more line${r.more === 1 ? '' : 's'} — ask the studio for the full receipt</td></tr>`;
+    rows += `<tr class="rule"><td>Subtotal</td><td class="amt">${money(r.sub, cur)}</td></tr>`;
+    if (r.tax && r.tax.p && r.tax.p.length > 1) {
+      for (const p of r.tax.p) rows += `<tr><td class="muted">${esc(p.k)}</td><td class="amt muted">${money(p.c, cur)}</td></tr>`;
+    }
+    if (r.tax && r.tax.tot) rows += `<tr><td>Tax</td><td class="amt">${money(r.tax.tot, cur)}</td></tr>`;
+    if (r.tip) rows += `<tr><td>Tip</td><td class="amt">${money(r.tip, cur)}</td></tr>`;
+    rows += `<tr class="total"><td>Total</td><td class="amt">${money(r.tot, cur)}</td></tr>`;
+    for (const p of (r.pay || [])) {
+      rows += `<tr class="rule"><td>${tenderName(p.k)}</td><td class="amt">${money(p.c, cur)}</td></tr>`;
+      if (p.ch) rows += `<tr><td class="muted">Change</td><td class="amt muted">${money(p.ch, cur)}</td></tr>`;
+      if (p.rd) rows += `<tr><td class="muted">Cash rounding</td><td class="amt muted">${money(p.rd, cur)}</td></tr>`;
+    }
+    const studio = r.s || {};
+    const link = studio.l ? `<p class="muted"><a href="${esc(studio.l)}">${esc(studio.n || 'The studio')}</a></p>` : '';
+    return `<div class="card">
+      <h1>${esc(studio.n || 'Receipt')}</h1>
+      <div class="muted">Receipt ${esc(r.no || '')}${when ? ' · ' + esc(when) : ''}${r.reg ? ' · ' + esc(r.reg) : ''}</div>
+      <table>${rows}</table>
+      ${link}
+    </div>`;
+  }
+
+  function serviceCard(s) {
+    return `<div class="card"><h1>Service record</h1><p class="muted">This record is meant for the My Piercing Buddy app. Open this link on a phone with the app installed to keep it.</p></div>`;
+  }
+
+  try {
+    const fragment = location.hash.replace(/^#/, '').trim();
+    if (!fragment) throw new Error('This link has no receipt in it.');
+    const records = await decode(fragment);
+    let html = '';
+    for (const rec of records) html += rec.t === 's' ? serviceCard(rec) : receiptCard(rec);
+    html += `<div class="foot">
+      <a class="btn" href="javascript:window.print()">Save or print</a>
+      <p class="muted">This receipt lives in the link itself — nothing was sent to a server, and nothing is stored here. Keep the link to keep the receipt. My Piercing Buddy can save it for you.</p>
+    </div>`;
+    app.innerHTML = html;
+  } catch (e) {
+    app.innerHTML = `<div class="card"><h1>Couldn't open this receipt</h1><p class="err">${esc(e.message || e)}</p><p class="muted">Ask the studio to send it again.</p></div>`;
+  }
+})();
+</script>
+</body>
+</html>

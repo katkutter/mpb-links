@@ -1,0 +1,13 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["EE6HVES7ZR.com.katatonikdev.MyPiercingBuddy"],
+        "components": [
+          { "/": "/r", "comment": "a receipt or service record in the URL fragment" },
+          { "/": "/r/*" }
+        ]
+      }
+    ]
+  }
+}
